@@ -1,0 +1,25 @@
+version: "3"
+
+services:
+  user:
+    build: ./user-identity-service
+    ports:
+      - "8081:8081"
+
+  menu:
+    build: ./menu-catalog-service
+    ports:
+      - "8082:8082"
+
+  order:
+    build: ./order-management-service
+    ports:
+      - "8083:8083"
+    depends_on:
+      - menu
+      - payment
+
+  payment:
+    build: ./payment-service
+    ports:
+      - "8084:8084"
