@@ -1,0 +1,462 @@
+openapi: 3.0.3
+info:
+  title: Payment Service API
+  description: >
+    Payment microservice for the Food Ordering System.
+    Handles Stripe payment processing, refunds, and invoice generation.
+    Receives payment requests from the Order Management Service.
+  version: 1.0.0
+  contact:
+    name: Student 4 - Susara
+
+servers:
+  - url: http://localhost:8084
+    description: Local development server
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      tags: [Health]
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: UP
+                  service:
+                    type: string
+                    example: payment-service
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  /api/payments:
+    post:
+      summary: Create a new payment
+      description: >
+        Called by the Order Service to initiate a payment.
+        Creates a Stripe PaymentIntent and returns a client secret.
+      tags: [Payments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePaymentRequest"
+      responses:
+        "201":
+          description: Payment created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreatePaymentResponse"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    get:
+      summary: Get all payments
+      description: Retrieve a paginated list of payments with optional filters
+      tags: [Payments]
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [pending, processing, succeeded, failed, refunded]
+          description: Filter by payment status
+        - in: query
+          name: userId
+          schema:
+            type: string
+          description: Filter by user ID
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+          description: Page number
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 10
+          description: Items per page
+      responses:
+        "200":
+          description: List of payments
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentListResponse"
+
+  /api/payments/{id}:
+    get:
+      summary: Get payment by ID
+      tags: [Payments]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Payment ID
+      responses:
+        "200":
+          description: Payment details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentResponse"
+        "404":
+          description: Payment not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/payments/order/{orderId}:
+    get:
+      summary: Get payment by Order ID
+      description: Retrieve payment information associated with a specific order
+      tags: [Payments]
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema:
+            type: string
+          description: Order ID from the Order Service
+      responses:
+        "200":
+          description: Payment details for the order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentResponse"
+        "404":
+          description: Payment not found for this order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/payments/{id}/confirm:
+    post:
+      summary: Confirm a payment
+      description: >
+        Confirm a payment using a Stripe payment method ID.
+        Use 'pm_card_visa' for testing successful payments.
+      tags: [Payments]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Payment ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - paymentMethodId
+              properties:
+                paymentMethodId:
+                  type: string
+                  example: pm_card_visa
+                  description: Stripe payment method ID (use pm_card_visa for testing)
+      responses:
+        "200":
+          description: Payment confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfirmPaymentResponse"
+        "400":
+          description: Payment already completed or invalid request
+        "404":
+          description: Payment not found
+
+  /api/payments/{id}/refund:
+    post:
+      summary: Refund a payment
+      description: Process a full or partial refund for a succeeded payment
+      tags: [Payments]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Payment ID
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount:
+                  type: number
+                  description: Partial refund amount (omit for full refund)
+                  example: 5.99
+      responses:
+        "200":
+          description: Refund processed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefundResponse"
+        "400":
+          description: Payment not eligible for refund
+        "404":
+          description: Payment not found
+
+  /api/payments/{id}/invoice:
+    get:
+      summary: Generate invoice for a payment
+      description: Returns an invoice object with payment details
+      tags: [Payments]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Payment ID
+      responses:
+        "200":
+          description: Invoice generated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvoiceResponse"
+        "404":
+          description: Payment not found
+
+components:
+  schemas:
+    CreatePaymentRequest:
+      type: object
+      required:
+        - orderId
+        - userId
+        - amount
+      properties:
+        orderId:
+          type: string
+          example: "order_abc123"
+          description: Order ID from the Order Service
+        userId:
+          type: string
+          example: "user_xyz789"
+          description: User ID from the User Identity Service
+        amount:
+          type: number
+          format: float
+          example: 25.99
+          description: Total payment amount
+        currency:
+          type: string
+          enum: [usd, eur, gbp, lkr]
+          default: usd
+          description: Payment currency
+        paymentMethod:
+          type: string
+          enum: [card, bank_transfer]
+          default: card
+        description:
+          type: string
+          example: "Payment for Order #123"
+        metadata:
+          type: object
+          description: Additional metadata
+
+    CreatePaymentResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Payment created successfully"
+        data:
+          type: object
+          properties:
+            paymentId:
+              type: string
+            stripePaymentIntentId:
+              type: string
+            clientSecret:
+              type: string
+            status:
+              type: string
+            amount:
+              type: number
+            currency:
+              type: string
+
+    PaymentResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: "#/components/schemas/Payment"
+
+    PaymentListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Payment"
+        pagination:
+          type: object
+          properties:
+            total:
+              type: integer
+            page:
+              type: integer
+            limit:
+              type: integer
+            pages:
+              type: integer
+
+    ConfirmPaymentResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        data:
+          type: object
+          properties:
+            paymentId:
+              type: string
+            orderId:
+              type: string
+            status:
+              type: string
+            amount:
+              type: number
+            currency:
+              type: string
+            stripeStatus:
+              type: string
+
+    RefundResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        data:
+          type: object
+          properties:
+            paymentId:
+              type: string
+            orderId:
+              type: string
+            refundId:
+              type: string
+            refundAmount:
+              type: number
+            status:
+              type: string
+
+    InvoiceResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            invoiceNumber:
+              type: string
+              example: "INV-ABC12345"
+            paymentId:
+              type: string
+            orderId:
+              type: string
+            userId:
+              type: string
+            amount:
+              type: number
+            currency:
+              type: string
+            status:
+              type: string
+            paymentMethod:
+              type: string
+            description:
+              type: string
+            issuedAt:
+              type: string
+              format: date-time
+            paidAt:
+              type: string
+              format: date-time
+              nullable: true
+            refundAmount:
+              type: number
+
+    Payment:
+      type: object
+      properties:
+        _id:
+          type: string
+        orderId:
+          type: string
+        userId:
+          type: string
+        amount:
+          type: number
+        currency:
+          type: string
+        status:
+          type: string
+          enum: [pending, processing, succeeded, failed, refunded]
+        paymentMethod:
+          type: string
+        stripePaymentIntentId:
+          type: string
+        description:
+          type: string
+        refundId:
+          type: string
+        refundAmount:
+          type: number
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+          example: "Error message"
