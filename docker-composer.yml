@@ -23,3 +23,19 @@ services:
     build: ./payment-service
     ports:
       - "8084:8084"
+    environment:
+      - MONGO_URI=mongodb://mongo-payment:27017/payment-service
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - NODE_ENV=production
+    depends_on:
+      - mongo-payment
+
+  mongo-payment:
+    image: mongo:7
+    ports:
+      - "27018:27017"
+    volumes:
+      - payment-data:/data/db
+
+volumes:
+  payment-data:
