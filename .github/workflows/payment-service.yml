@@ -5,12 +5,17 @@ on:
     branches: [main, payment_Susara]
     paths:
       - "payment-service/**"
+      - ".github/workflows/payment-service.yml"
   pull_request:
     branches: [main]
     paths:
       - "payment-service/**"
+      - ".github/workflows/payment-service.yml"
 
 jobs:
+  # ─────────────────────────────────────────────────
+  # 1. TEST
+  # ─────────────────────────────────────────────────
   test:
     runs-on: ubuntu-latest
     defaults:
@@ -39,6 +44,7 @@ jobs:
         run: npm test
         env:
           STRIPE_SECRET_KEY: sk_test_dummy_key_for_ci
+          USER_SERVICE_URL: https://user-identity-service.onrender.com
           NODE_ENV: test
 
       - name: Upload coverage report
@@ -47,10 +53,16 @@ jobs:
           name: coverage-report
           path: payment-service/coverage/
 
+  # ─────────────────────────────────────────────────
+  # 2. BUILD & PUSH Docker image (main branch only)
+  # ─────────────────────────────────────────────────
   build:
-    needs: test
+    needs: [test]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
 
     steps:
       - name: Checkout code
@@ -65,11 +77,47 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      - name: Generate Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKER_USERNAME }}/payment-service
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: ./payment-service
           push: true
-          tags: |
-            ${{ secrets.DOCKER_USERNAME }}/payment-service:latest
-            ${{ secrets.DOCKER_USERNAME }}/payment-service:${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─────────────────────────────────────────────────
+  # 3. DEPLOY to Railway
+  # ─────────────────────────────────────────────────
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy to Railway
+        run: |
+          cd payment-service
+          railway up --detach
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          # RAILWAY_TOKEN — get this from:
+          # railway.com → Account Settings → Tokens → New Token
+          # Then add it as a secret in:
+          # github.com/Dilki687/food-ordering-system → Settings → Secrets → Actions

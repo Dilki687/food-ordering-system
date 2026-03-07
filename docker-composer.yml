@@ -26,6 +26,7 @@ services:
     environment:
       - MONGO_URI=mongodb://mongo-payment:27017/payment-service
       - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - USER_SERVICE_URL=https://user-identity-service.onrender.com
       - NODE_ENV=production
     depends_on:
       - mongo-payment
