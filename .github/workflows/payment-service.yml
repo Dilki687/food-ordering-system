@@ -138,17 +138,39 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Railway CLI
-        run: npm install -g @railway/cli
-
-      - name: Deploy to Railway
+      - name: Deploy to Railway via API
         run: |
-          # Deploy the Docker image we just pushed to Docker Hub
-          railway deploy \
-            --image ${{ secrets.DOCKER_USERNAME }}/payment-service:latest \
-            --service af970fd3-7ca2-46c5-95db-f221fa824281 \
-            --environment production \
-            --detach
+          # Step 1: Get the environment ID for this project
+          ENV_RESPONSE=$(curl -sf -X POST \
+            "https://backboard.railway.com/graphql/v2" \
+            -H "Authorization: Bearer $RAILWAY_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"query":"{ project(id: \"ba4412f7-ec82-4931-a3e8-608df1b959e6\") { environments { edges { node { id name } } } } }"}')
+
+          echo "Environments: $ENV_RESPONSE"
+
+          ENV_ID=$(echo "$ENV_RESPONSE" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+envs = d['data']['project']['environments']['edges']
+print(envs[0]['node']['id'])
+")
+          echo "Environment ID: $ENV_ID"
+
+          # Step 2: Trigger deployment using the official Railway mutation
+          DEPLOY=$(curl -sf -X POST \
+            "https://backboard.railway.com/graphql/v2" \
+            -H "Authorization: Bearer $RAILWAY_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"query\":\"mutation { environmentTriggersDeploy(input: { projectId: \\\"ba4412f7-ec82-4931-a3e8-608df1b959e6\\\", serviceId: \\\"af970fd3-7ca2-46c5-95db-f221fa824281\\\", environmentId: \\\"$ENV_ID\\\" }) }\"}")
+
+          echo "Deploy response: $DEPLOY"
+
+          if echo "$DEPLOY" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(1 if 'errors' in d else 0)"; then
+            echo "Deployment triggered successfully!"
+          else
+            echo "Deployment API returned errors"
+            exit 1
+          fi
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_PROJECT_ID: ba4412f7-ec82-4931-a3e8-608df1b959e6
