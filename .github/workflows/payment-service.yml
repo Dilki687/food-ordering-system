@@ -54,10 +54,40 @@ jobs:
           path: payment-service/coverage/
 
   # ─────────────────────────────────────────────────
-  # 2. BUILD & PUSH Docker image (main branch only)
+  # 2. SAST — Snyk Security Scan (DevSecOps)
+  # ─────────────────────────────────────────────────
+  snyk:
+    needs: test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: payment-service
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18.x
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Snyk to check for vulnerabilities
+        uses: snyk/actions/node@master
+        continue-on-error: true   # won't block pipeline on findings, but reports them
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --all-projects
+
+  # ─────────────────────────────────────────────────
+  # 3. BUILD & PUSH Docker image (main branch only)
   # ─────────────────────────────────────────────────
   build:
-    needs: [test]
+    needs: [test, snyk]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
 
@@ -97,7 +127,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ─────────────────────────────────────────────────
-  # 3. DEPLOY to Railway
+  # 4. DEPLOY to Railway
   # ─────────────────────────────────────────────────
   deploy:
     needs: build
