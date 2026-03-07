@@ -142,12 +142,6 @@ jobs:
         run: npm install -g @railway/cli
 
       - name: Deploy to Railway
-        run: |
-          cd payment-service
-          railway up --detach
+        run: railway redeploy --service af970fd3-7ca2-46c5-95db-f221fa824281 --yes
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          # RAILWAY_TOKEN — get this from:
-          # railway.com → Account Settings → Tokens → New Token
-          # Then add it as a secret in:
-          # github.com/Dilki687/food-ordering-system → Settings → Secrets → Actions
