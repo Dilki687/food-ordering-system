@@ -143,12 +143,12 @@ jobs:
 
       - name: Deploy to Railway
         run: |
-          cd payment-service
-          railway up \
+          # Deploy the Docker image we just pushed to Docker Hub
+          railway deploy \
+            --image ${{ secrets.DOCKER_USERNAME }}/payment-service:latest \
             --service af970fd3-7ca2-46c5-95db-f221fa824281 \
             --environment production \
-            --detach \
-            --ci
+            --detach
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_PROJECT_ID: ba4412f7-ec82-4931-a3e8-608df1b959e6
