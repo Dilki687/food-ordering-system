@@ -1,0 +1,22 @@
+services:
+  # ─── Payment Service ───────────────────────────────────────────────────────
+  - type: web
+    name: payment-service
+    env: docker
+    # Docker Hub image — set DOCKER_USERNAME in Render environment or replace
+    # with your actual Docker Hub username, e.g. susara/payment-service:latest
+    dockerImage: $DOCKER_USERNAME/payment-service:latest
+    region: singapore          # closest to Sri Lanka; change to oregon/frankfurt if needed
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "8084"
+      - key: NODE_ENV
+        value: production
+      - key: MONGO_URI
+        sync: false            # set this manually in the Render dashboard (secret)
+      - key: STRIPE_SECRET_KEY
+        sync: false            # set this manually in the Render dashboard (secret)
+      - key: USER_SERVICE_URL
+        value: https://user-identity-service.onrender.com

@@ -151,3 +151,44 @@ exports.generateInvoice = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * @desc    Get user profile from User Identity Service
+ * @route   GET /api/payments/user/:userId/profile
+ * @integration  User Identity Service — GET /api/users/:id
+ */
+exports.getUserProfile = async (req, res, next) => {
+  try {
+    const user = await paymentService.getUserDetails(req.params.userId);
+
+    res.status(200).json({
+      success: true,
+      data: user,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Get all payments for a user, with their profile from User Identity Service
+ * @route   GET /api/payments/user/:userId
+ * @integration  User Identity Service — GET /api/users/:id
+ */
+exports.getPaymentsByUser = async (req, res, next) => {
+  try {
+    const { page, limit } = req.query;
+    const result = await paymentService.getPaymentsByUser(req.params.userId, { page, limit });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        user: result.user,
+        payments: result.payments,
+      },
+      pagination: result.pagination,
+    });
+  } catch (error) {
+    next(error);
+  }
+};

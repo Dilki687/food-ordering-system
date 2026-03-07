@@ -5,6 +5,19 @@ const app = require("../src/app");
 jest.mock("../src/models/Payment");
 const Payment = require("../src/models/Payment");
 
+// Mock axios — prevents real HTTP calls to the User Identity Service
+jest.mock("axios");
+const axios = require("axios");
+
+// Default: user lookup succeeds
+const mockUser = {
+  _id: "user_001",
+  name: "Susara Perera",
+  email: "susara@example.com",
+  role: "customer",
+};
+axios.get = jest.fn().mockResolvedValue({ data: mockUser });
+
 // Mock Stripe
 jest.mock("stripe", () => {
   return jest.fn(() => ({
@@ -51,6 +64,8 @@ const mockPayment = (overrides = {}) => ({
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // Restore default axios mock after each test
+  axios.get = jest.fn().mockResolvedValue({ data: mockUser });
 });
 
 // ==================== HEALTH CHECK ====================
@@ -114,6 +129,21 @@ describe("POST /api/payments", () => {
     });
 
     expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+  });
+
+  it("should return 404 if userId does not exist in User Identity Service", async () => {
+    const err = new Error("Not Found");
+    err.response = { status: 404, data: { message: "User not found" } };
+    axios.get = jest.fn().mockRejectedValue(err);
+
+    const res = await request(app).post("/api/payments").send({
+      orderId: "order_001",
+      userId: "unknown_user",
+      amount: 25.99,
+    });
+
+    expect(res.status).toBe(404);
     expect(res.body.success).toBe(false);
   });
 });
@@ -339,6 +369,91 @@ describe("GET /api/payments/:id/invoice", () => {
     const res = await request(app).get("/api/payments/665f1a2b3c4d5e6f7a8b9c0d/invoice");
 
     expect(res.status).toBe(404);
+  });
+});
+
+// ==================== GET /api/payments/user/:userId/profile ====================
+describe("GET /api/payments/user/:userId/profile (User Identity Service integration)", () => {
+  it("should return user profile from User Identity Service", async () => {
+    axios.get = jest.fn().mockResolvedValue({ data: mockUser });
+
+    const res = await request(app).get("/api/payments/user/user_001/profile");
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data).toMatchObject({ _id: "user_001", name: "Susara Perera" });
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining("/api/users/user_001"),
+      expect.any(Object)
+    );
+  });
+
+  it("should return 404 if user does not exist", async () => {
+    const err = new Error("Not Found");
+    err.response = { status: 404, data: { message: "User not found" } };
+    axios.get = jest.fn().mockRejectedValue(err);
+
+    const res = await request(app).get("/api/payments/user/nonexistent_user/profile");
+
+    expect(res.status).toBe(404);
+    expect(res.body.success).toBe(false);
+  });
+
+  it("should return 503 if User Identity Service is unreachable", async () => {
+    const err = new Error("connect ECONNREFUSED");
+    err.code = "ECONNREFUSED";
+    axios.get = jest.fn().mockRejectedValue(err);
+
+    const res = await request(app).get("/api/payments/user/user_001/profile");
+
+    expect(res.status).toBe(503);
+  });
+});
+
+// ==================== GET /api/payments/user/:userId ====================
+describe("GET /api/payments/user/:userId (payments enriched with user profile)", () => {
+  it("should return payments and user profile", async () => {
+    const payments = [mockPayment(), mockPayment({ orderId: "order_002" })];
+    axios.get = jest.fn().mockResolvedValue({ data: mockUser });
+
+    Payment.find = jest.fn().mockReturnValue({
+      sort: jest.fn().mockReturnValue({
+        skip: jest.fn().mockReturnValue({
+          limit: jest.fn().mockResolvedValue(payments),
+        }),
+      }),
+    });
+    Payment.countDocuments = jest.fn().mockResolvedValue(2);
+
+    const res = await request(app).get("/api/payments/user/user_001");
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.user).toMatchObject({ _id: "user_001" });
+    expect(res.body.data.payments.length).toBe(2);
+    expect(res.body.pagination.total).toBe(2);
+  });
+
+  it("should still return payments even if User Identity Service is down", async () => {
+    const payments = [mockPayment()];
+    const networkErr = new Error("ECONNREFUSED");
+    networkErr.code = "ECONNREFUSED";
+    axios.get = jest.fn().mockRejectedValue(networkErr);
+
+    Payment.find = jest.fn().mockReturnValue({
+      sort: jest.fn().mockReturnValue({
+        skip: jest.fn().mockReturnValue({
+          limit: jest.fn().mockResolvedValue(payments),
+        }),
+      }),
+    });
+    Payment.countDocuments = jest.fn().mockResolvedValue(1);
+
+    const res = await request(app).get("/api/payments/user/user_001");
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.user).toBeNull();
+    expect(res.body.data.payments.length).toBe(1);
   });
 });
 

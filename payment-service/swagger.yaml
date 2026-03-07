@@ -5,6 +5,15 @@ info:
     Payment microservice for the Food Ordering System.
     Handles Stripe payment processing, refunds, and invoice generation.
     Receives payment requests from the Order Management Service.
+
+    **Inter-service communication:**
+    This service integrates with the **User Identity Service**
+    (https://user-identity-service.onrender.com) to validate users and fetch
+    their profiles when creating or querying payments.
+    Relevant external endpoints consumed:
+    - `GET /api/users/{id}` — fetch user profile by ID
+    - `POST /api/users/login` — (referenced for documentation purposes)
+    - `POST /api/users/register` — (referenced for documentation purposes)
   version: 1.0.0
   contact:
     name: Student 4 - Susara
@@ -12,6 +21,12 @@ info:
 servers:
   - url: http://localhost:8084
     description: Local development server
+  - url: https://payment-service-latest.onrender.com
+    description: Production (Render)
+
+externalDocs:
+  description: User Identity Service API
+  url: https://user-identity-service.onrender.com/api/users
 
 paths:
   /health:
@@ -222,6 +237,79 @@ paths:
           description: Payment not eligible for refund
         "404":
           description: Payment not found
+
+  /api/payments/user/{userId}/profile:
+    get:
+      summary: Get user profile from User Identity Service
+      description: >
+        Fetches the user's full profile by calling the external User Identity Service.
+        Endpoint: GET https://user-identity-service.onrender.com/api/users/{id}
+      tags: [User Integration]
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+          description: User ID to look up in the User Identity Service
+      responses:
+        "200":
+          description: User profile retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfileResponse"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: User Identity Service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/payments/user/{userId}:
+    get:
+      summary: Get all payments for a user (enriched with profile)
+      description: >
+        Returns a paginated list of payments belonging to the specified user.
+        The response also includes the user's profile fetched live from the
+        User Identity Service (https://user-identity-service.onrender.com/api/users/{id}).
+      tags: [User Integration]
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+          description: User ID
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          description: Payments with user profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserPaymentsResponse"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /api/payments/{id}/invoice:
     get:
@@ -450,6 +538,59 @@ components:
         updatedAt:
           type: string
           format: date-time
+
+    UserProfile:
+      type: object
+      description: User object returned by the User Identity Service
+      properties:
+        _id:
+          type: string
+          example: "67abc123"
+        name:
+          type: string
+          example: "Susara Perera"
+        email:
+          type: string
+          example: "susara@example.com"
+        role:
+          type: string
+          example: "customer"
+
+    UserProfileResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: "#/components/schemas/UserProfile"
+
+    UserPaymentsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            user:
+              $ref: "#/components/schemas/UserProfile"
+            payments:
+              type: array
+              items:
+                $ref: "#/components/schemas/Payment"
+        pagination:
+          type: object
+          properties:
+            total:
+              type: integer
+            page:
+              type: integer
+            limit:
+              type: integer
+            pages:
+              type: integer
 
     ErrorResponse:
       type: object

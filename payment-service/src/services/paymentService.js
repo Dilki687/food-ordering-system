@@ -1,17 +1,30 @@
 const stripe = require("stripe");
 const Payment = require("../models/Payment");
+const { validateUser, getUserById } = require("./userService");
 
 // Initialize Stripe with the secret key
 const stripeClient = stripe(process.env.STRIPE_SECRET_KEY);
 
 class PaymentService {
   /**
-   * Create a Stripe PaymentIntent and store the payment record
+   * Create a Stripe PaymentIntent and store the payment record.
+   * Validates the userId against the User Identity Service before proceeding.
    */
   async createPayment({ orderId, userId, amount, currency, paymentMethod, description, metadata }) {
     // Validate minimum amount (Stripe requires at least 50 cents)
     if (amount < 0.5) {
       throw { status: 400, message: "Minimum payment amount is $0.50" };
+    }
+
+    // ── Inter-service call: verify user exists in User Identity Service ──
+    let userDetails = null;
+    try {
+      userDetails = await validateUser(userId);
+    } catch (err) {
+      // Propagate 404 (user not found) as a hard failure;
+      // treat network/timeout issues as soft warnings so payments still work
+      if (err.status === 404) throw err;
+      console.warn(`[PaymentService] Could not reach User Identity Service: ${err.message}`);
     }
 
     // Convert amount to cents for Stripe (Stripe uses smallest currency unit)
@@ -30,7 +43,7 @@ class PaymentService {
       },
     });
 
-    // Save payment record in database
+    // Save payment record in database (include user details snapshot)
     const payment = new Payment({
       orderId,
       userId,
@@ -42,6 +55,7 @@ class PaymentService {
       stripeClientSecret: paymentIntent.client_secret,
       description: description || `Payment for Order ${orderId}`,
       metadata,
+      userDetails, // cached snapshot from User Identity Service
     });
 
     await payment.save();
@@ -203,6 +217,49 @@ class PaymentService {
     };
 
     return invoice;
+  }
+
+  /**
+   * Fetch a user's profile directly from the User Identity Service.
+   * Endpoint resolved: GET https://user-identity-service.onrender.com/api/users/:id
+   *
+   * @param {string} userId
+   * @returns {Promise<object>} User profile
+   */
+  async getUserDetails(userId) {
+    return getUserById(userId);
+  }
+
+  /**
+   * Get all payments for a specific user, enriched with their profile from
+   * the User Identity Service.
+   *
+   * @param {string} userId
+   * @param {{ page?: number, limit?: number }} options
+   */
+  async getPaymentsByUser(userId, { page = 1, limit = 10 } = {}) {
+    const skip = (page - 1) * limit;
+
+    const [payments, total, user] = await Promise.all([
+      Payment.find({ userId }).sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit)),
+      Payment.countDocuments({ userId }),
+      getUserById(userId).catch((err) => {
+        // Don't fail the whole request if user service is unreachable
+        console.warn(`[PaymentService] Could not fetch user for enrichment: ${err.message}`);
+        return null;
+      }),
+    ]);
+
+    return {
+      user,
+      payments,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / limit),
+      },
+    };
   }
 }
 
