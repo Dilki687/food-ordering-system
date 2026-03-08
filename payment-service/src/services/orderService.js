@@ -22,7 +22,8 @@ const getOrderById = async (orderId) => {
     const payload = response.data;
     const order = payload?.data?.order || payload?.data || payload?.order || payload;
 
-    if (!order || !order._id) {
+    // Accept both MongoDB _id and simple numeric id
+    if (!order || (order._id === undefined && order.id === undefined)) {
       throw { status: 404, message: `Order not found: ${orderId}` };
     }
 
