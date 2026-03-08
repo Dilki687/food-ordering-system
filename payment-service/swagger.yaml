@@ -4,29 +4,35 @@ info:
   description: >
     Payment microservice for the Food Ordering System.
     Handles Stripe payment processing, refunds, and invoice generation.
-    Receives payment requests from the Order Management Service.
 
     **Inter-service communication:**
-    This service integrates with the **User Identity Service**
-    (https://user-identity-service.onrender.com) to validate users and fetch
-    their profiles when creating or querying payments.
-    Relevant external endpoints consumed:
+
+    | Service | Base URL | Usage |
+    |---------|----------|-------|
+    | Order Service | https://order-service-production-5615.up.railway.app | Fetch order total & validate order status |
+    | User Identity Service | https://user-identity-service.onrender.com | Validate user & snapshot profile |
+
+    Key endpoints consumed:
+    - `GET /orders/{id}` — fetch order details (amount, status, items)
     - `GET /api/users/{id}` — fetch user profile by ID
-    - `POST /api/users/login` — (referenced for documentation purposes)
-    - `POST /api/users/register` — (referenced for documentation purposes)
-  version: 1.0.0
+
+    **Recommended integration flow (Order Service):**
+    After creating an order, call `POST /api/payments/order/{orderId}/user/{userId}` —
+    the Payment Service automatically fetches the order amount and validates the user,
+    so the Order Service does not need to pass an amount.
+  version: 1.1.0
   contact:
     name: Student 4 - Susara
 
 servers:
+  - url: https://food-order-payment-service-production.up.railway.app
+    description: Production (Railway)
   - url: http://localhost:8084
     description: Local development server
-  - url: https://payment-service-latest.onrender.com
-    description: Production (Render)
 
 externalDocs:
-  description: User Identity Service API
-  url: https://user-identity-service.onrender.com/api/users
+  description: Order Service API
+  url: https://order-service-production-5615.up.railway.app
 
 paths:
   /health:
@@ -51,12 +57,99 @@ paths:
                     type: string
                     format: date-time
 
+  /api/payments/order/{orderId}/user/{userId}:
+    post:
+      summary: "[PRIMARY] Auto-create payment from Order + User IDs"
+      description: >
+        **Recommended endpoint for the Order Service.**
+
+        Pass the `orderId` and `userId` in the URL — the Payment Service will:
+
+        1. `GET https://order-service-production-5615.up.railway.app/orders/{orderId}`
+           → fetch order total amount and validate the order is payable
+
+        2. `GET https://user-identity-service.onrender.com/api/users/{userId}`
+           → validate the user exists and capture their profile snapshot
+
+        3. Create a Stripe PaymentIntent with the fetched amount
+
+        4. Persist and return the payment record with a `clientSecret` for
+           frontend Stripe.js confirmation
+      tags: [Order Integration]
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema:
+            type: string
+          description: Order ID — from Order Service (`https://order-service-production-5615.up.railway.app`)
+          example: "order_abc123"
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+          description: User ID — from User Identity Service (`https://user-identity-service.onrender.com`)
+          example: "user_xyz789"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                currency:
+                  type: string
+                  enum: [usd, eur, gbp, lkr]
+                  default: usd
+                  description: Override currency (default taken from order or 'usd')
+                paymentMethod:
+                  type: string
+                  enum: [card, bank_transfer]
+                  default: card
+                metadata:
+                  type: object
+                  description: Additional metadata to attach
+      responses:
+        "201":
+          description: Payment created — includes clientSecret for Stripe.js
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreatePaymentFromOrderResponse"
+        "404":
+          description: Order or user not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Order already paid or cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Order has no payable amount
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Order Service or User Identity Service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /api/payments:
     post:
-      summary: Create a new payment
+      summary: Create a payment (manual — caller supplies amount)
       description: >
-        Called by the Order Service to initiate a payment.
-        Creates a Stripe PaymentIntent and returns a client secret.
+        Manual payment creation — caller must supply `orderId`, `userId`, and `amount`
+        explicitly. Use `POST /api/payments/order/{orderId}/user/{userId}` instead
+        when integrating with the Order Service; that endpoint fetches the amount
+        automatically.
       tags: [Payments]
       requestBody:
         required: true
@@ -311,6 +404,38 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/payments/{id}/details:
+    get:
+      summary: Get payment enriched with live order & user details
+      description: >
+        Returns the payment record enriched with live data fetched from:
+        - `GET https://order-service-production-5615.up.railway.app/orders/{orderId}`
+        - `GET https://user-identity-service.onrender.com/api/users/{userId}`
+
+        Falls back to the cached snapshot stored at payment creation time
+        if either upstream service is unavailable.
+      tags: [Order Integration]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Payment ID
+      responses:
+        "200":
+          description: Payment with order and user details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentWithDetailsResponse"
+        "404":
+          description: Payment not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /api/payments/{id}/invoice:
     get:
       summary: Generate invoice for a payment
@@ -538,6 +663,84 @@ components:
         updatedAt:
           type: string
           format: date-time
+
+    OrderDetails:
+      type: object
+      description: Order object returned by the Order Service (https://order-service-production-5615.up.railway.app)
+      properties:
+        _id:
+          type: string
+          example: "order_abc123"
+        userId:
+          type: string
+          example: "user_xyz789"
+        status:
+          type: string
+          example: "pending"
+        totalAmount:
+          type: number
+          example: 25.99
+          description: Total order amount (also checked as totalPrice / total / amount)
+        items:
+          type: array
+          items:
+            type: object
+        createdAt:
+          type: string
+          format: date-time
+
+    CreatePaymentFromOrderResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Payment created successfully from order"
+        data:
+          type: object
+          properties:
+            paymentId:
+              type: string
+              description: MongoDB payment document ID
+            orderId:
+              type: string
+            userId:
+              type: string
+            amount:
+              type: number
+              description: Amount fetched from the Order Service
+            currency:
+              type: string
+            stripePaymentIntentId:
+              type: string
+            clientSecret:
+              type: string
+              description: Stripe PaymentIntent client secret — pass to Stripe.js
+            status:
+              type: string
+              example: "processing"
+            order:
+              $ref: "#/components/schemas/OrderDetails"
+            user:
+              $ref: "#/components/schemas/UserProfile"
+
+    PaymentWithDetailsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            payment:
+              $ref: "#/components/schemas/Payment"
+            order:
+              $ref: "#/components/schemas/OrderDetails"
+            user:
+              $ref: "#/components/schemas/UserProfile"
 
     UserProfile:
       type: object

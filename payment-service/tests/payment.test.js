@@ -16,7 +16,24 @@ const mockUser = {
   email: "susara@example.com",
   role: "customer",
 };
-axios.get = jest.fn().mockResolvedValue({ data: mockUser });
+
+// Default: order lookup succeeds
+const mockOrder = {
+  _id: "order_001",
+  userId: "user_001",
+  status: "pending",
+  totalAmount: 25.99,
+  items: [{ name: "Burger", price: 25.99, qty: 1 }],
+  createdAt: new Date().toISOString(),
+};
+
+// Route requests to the correct mock based on URL
+axios.get = jest.fn().mockImplementation((url) => {
+  if (url && url.includes("/orders/")) {
+    return Promise.resolve({ data: mockOrder });
+  }
+  return Promise.resolve({ data: mockUser });
+});
 
 // Mock Stripe
 jest.mock("stripe", () => {
@@ -64,8 +81,13 @@ const mockPayment = (overrides = {}) => ({
 
 beforeEach(() => {
   jest.clearAllMocks();
-  // Restore default axios mock after each test
-  axios.get = jest.fn().mockResolvedValue({ data: mockUser });
+  // Restore default axios mock after each test (handles both user + order)
+  axios.get = jest.fn().mockImplementation((url) => {
+    if (url && url.includes("/orders/")) {
+      return Promise.resolve({ data: mockOrder });
+    }
+    return Promise.resolve({ data: mockUser });
+  });
 });
 
 // ==================== HEALTH CHECK ====================
@@ -454,6 +476,143 @@ describe("GET /api/payments/user/:userId (payments enriched with user profile)",
     expect(res.status).toBe(200);
     expect(res.body.data.user).toBeNull();
     expect(res.body.data.payments.length).toBe(1);
+  });
+});
+
+// ==================== POST /api/payments/order/:orderId/user/:userId ====================
+describe("POST /api/payments/order/:orderId/user/:userId (Order Service Integration)", () => {
+  it("should auto-create a payment by fetching amount from Order Service", async () => {
+    const mock = mockPayment();
+    Payment.mockImplementation(() => ({
+      ...mock,
+      save: jest.fn().mockResolvedValue(mock),
+    }));
+
+    const res = await request(app)
+      .post("/api/payments/order/order_001/user/user_001")
+      .send({});
+
+    expect(res.status).toBe(201);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.orderId).toBe("order_001");
+    expect(res.body.data.userId).toBe("user_001");
+    expect(res.body.data.amount).toBe(25.99);
+    expect(res.body.data.stripePaymentIntentId).toBe("pi_test_123456");
+    // Verify Order Service was called
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining("/orders/order_001"),
+      expect.any(Object)
+    );
+  });
+
+  it("should accept optional currency and paymentMethod in body", async () => {
+    const mock = mockPayment({ currency: "lkr" });
+    Payment.mockImplementation(() => ({
+      ...mock,
+      save: jest.fn().mockResolvedValue(mock),
+    }));
+
+    const res = await request(app)
+      .post("/api/payments/order/order_001/user/user_001")
+      .send({ currency: "lkr", paymentMethod: "card" });
+
+    expect(res.status).toBe(201);
+    expect(res.body.success).toBe(true);
+  });
+
+  it("should return 404 when Order Service returns order not found", async () => {
+    const err = new Error("Not Found");
+    err.response = { status: 404, data: { message: "Order not found" } };
+    axios.get = jest.fn().mockImplementation((url) => {
+      if (url && url.includes("/orders/")) return Promise.reject(err);
+      return Promise.resolve({ data: mockUser });
+    });
+
+    const res = await request(app)
+      .post("/api/payments/order/nonexistent_order/user/user_001")
+      .send({});
+
+    expect(res.status).toBe(404);
+    expect(res.body.success).toBe(false);
+  });
+
+  it("should return 404 when User Identity Service returns user not found", async () => {
+    const err = new Error("Not Found");
+    err.response = { status: 404, data: { message: "User not found" } };
+    axios.get = jest.fn().mockImplementation((url) => {
+      if (url && url.includes("/orders/")) return Promise.resolve({ data: mockOrder });
+      return Promise.reject(err);
+    });
+
+    const res = await request(app)
+      .post("/api/payments/order/order_001/user/unknown_user")
+      .send({});
+
+    expect(res.status).toBe(404);
+    expect(res.body.success).toBe(false);
+  });
+
+  it("should return 503 when Order Service is unreachable", async () => {
+    const err = new Error("connect ECONNREFUSED");
+    err.code = "ECONNREFUSED";
+    axios.get = jest.fn().mockImplementation((url) => {
+      if (url && url.includes("/orders/")) return Promise.reject(err);
+      return Promise.resolve({ data: mockUser });
+    });
+
+    const res = await request(app)
+      .post("/api/payments/order/order_001/user/user_001")
+      .send({});
+
+    expect(res.status).toBe(503);
+    expect(res.body.success).toBe(false);
+  });
+});
+
+// ==================== GET /api/payments/:id/details ====================
+describe("GET /api/payments/:id/details (enriched with live order & user)", () => {
+  it("should return payment enriched with order and user details", async () => {
+    const mock = mockPayment();
+    Payment.findById = jest.fn().mockResolvedValue(mock);
+
+    const res = await request(app).get(`/api/payments/${mock._id}/details`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.payment).toBeDefined();
+    expect(res.body.data.order).toBeDefined();
+    expect(res.body.data.user).toBeDefined();
+    expect(res.body.data.order._id).toBe("order_001");
+    expect(res.body.data.user._id).toBe("user_001");
+  });
+
+  it("should return 404 if payment not found", async () => {
+    Payment.findById = jest.fn().mockResolvedValue(null);
+
+    const res = await request(app).get("/api/payments/665f1a2b3c4d5e6f7a8b9c0d/details");
+
+    expect(res.status).toBe(404);
+    expect(res.body.success).toBe(false);
+  });
+
+  it("should return payment with null order if Order Service is down (graceful degradation)", async () => {
+    const mock = mockPayment();
+    Payment.findById = jest.fn().mockResolvedValue(mock);
+
+    const networkErr = new Error("ECONNREFUSED");
+    networkErr.code = "ECONNREFUSED";
+    axios.get = jest.fn().mockImplementation((url) => {
+      if (url && url.includes("/orders/")) return Promise.reject(networkErr);
+      return Promise.resolve({ data: mockUser });
+    });
+
+    const res = await request(app).get(`/api/payments/${mock._id}/details`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    // order should be null or fallback snapshot
+    expect(res.body.data.payment).toBeDefined();
+    expect(res.body.data.user).toBeDefined();
   });
 });
 

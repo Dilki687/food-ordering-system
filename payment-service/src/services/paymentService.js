@@ -1,6 +1,7 @@
 const stripe = require("stripe");
 const Payment = require("../models/Payment");
 const { validateUser, getUserById } = require("./userService");
+const { validateOrder, getOrderById } = require("./orderService");
 
 // Initialize Stripe with the secret key
 const stripeClient = stripe(process.env.STRIPE_SECRET_KEY);
@@ -217,6 +218,131 @@ class PaymentService {
     };
 
     return invoice;
+  }
+
+  /**
+   * Auto-create a payment by fetching order details from the Order Service
+   * and validating the user from the User Identity Service.
+   *
+   * Flow:
+   *   1. GET https://order-service-production-5615.up.railway.app/orders/:orderId
+   *      → extract total amount, validate order is payable
+   *   2. GET https://user-identity-service.onrender.com/api/users/:userId
+   *      → validate user exists, capture profile snapshot
+   *   3. Create Stripe PaymentIntent with the fetched amount
+   *   4. Persist payment record in MongoDB
+   *
+   * @param {string} orderId   - Order ID from the Order Service
+   * @param {string} userId    - User ID from the User Identity Service
+   * @param {string} [currency]      - ISO 4217 currency code (default: "usd")
+   * @param {string} [paymentMethod] - Payment method type (default: "card")
+   * @param {object} [metadata]      - Extra metadata to attach to the payment
+   * @returns {Promise<object>} Created payment details + Stripe client secret
+   */
+  async createPaymentFromOrder({ orderId, userId, currency, paymentMethod, metadata }) {
+    // ── Step 1: Validate order & get amount from Order Service ──────────────
+    let order, amount;
+    try {
+      ({ order, amount } = await validateOrder(orderId));
+    } catch (err) {
+      throw err;
+    }
+
+    // ── Step 2: Validate user from User Identity Service ────────────────────
+    let userDetails = null;
+    try {
+      userDetails = await validateUser(userId);
+    } catch (err) {
+      if (err.status === 404) throw err;
+      console.warn(`[PaymentService] Could not reach User Identity Service: ${err.message}`);
+    }
+
+    // Ensure the userId on the order matches (if order carries a userId field)
+    if (order.userId && order.userId.toString() !== userId.toString()) {
+      throw {
+        status: 403,
+        message: `User ${userId} is not the owner of order ${orderId}`,
+      };
+    }
+
+    // ── Step 3: Create Stripe PaymentIntent ─────────────────────────────────
+    const amountInCents = Math.round(amount * 100);
+    const resolvedCurrency = currency || order.currency || "usd";
+
+    const paymentIntent = await stripeClient.paymentIntents.create({
+      amount: amountInCents,
+      currency: resolvedCurrency,
+      payment_method_types: ["card"],
+      description: `Payment for Order ${orderId}`,
+      metadata: {
+        orderId,
+        userId,
+        ...metadata,
+      },
+    });
+
+    // ── Step 4: Persist payment record ──────────────────────────────────────
+    const payment = new Payment({
+      orderId,
+      userId,
+      amount,
+      currency: resolvedCurrency,
+      status: "processing",
+      paymentMethod: paymentMethod || "card",
+      stripePaymentIntentId: paymentIntent.id,
+      stripeClientSecret: paymentIntent.client_secret,
+      description: `Payment for Order ${orderId}`,
+      metadata,
+      userDetails,       // snapshot from User Identity Service
+      orderDetails: order, // snapshot from Order Service
+    });
+
+    await payment.save();
+
+    return {
+      paymentId: payment._id,
+      orderId,
+      userId,
+      amount,
+      currency: resolvedCurrency,
+      stripePaymentIntentId: paymentIntent.id,
+      clientSecret: paymentIntent.client_secret,
+      status: payment.status,
+      order,
+      user: userDetails,
+    };
+  }
+
+  /**
+   * Get a payment enriched with live data from Order Service and
+   * User Identity Service.
+   *
+   * @param {string} paymentId
+   * @returns {Promise<object>} Payment + order + user details
+   */
+  async getPaymentWithDetails(paymentId) {
+    const payment = await Payment.findById(paymentId);
+    if (!payment) {
+      throw { status: 404, message: "Payment not found" };
+    }
+
+    // Fetch order and user in parallel; degrade gracefully if either is down
+    const [order, user] = await Promise.all([
+      getOrderById(payment.orderId).catch((err) => {
+        console.warn(`[PaymentService] Could not enrich with order: ${err.message}`);
+        return payment.orderDetails || null;
+      }),
+      getUserById(payment.userId).catch((err) => {
+        console.warn(`[PaymentService] Could not enrich with user: ${err.message}`);
+        return payment.userDetails || null;
+      }),
+    ]);
+
+    return {
+      payment,
+      order,
+      user,
+    };
   }
 
   /**

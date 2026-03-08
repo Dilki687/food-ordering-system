@@ -1,7 +1,55 @@
 const paymentService = require("../services/paymentService");
 
 /**
- * @desc    Process a new payment (called by Order Service)
+ * @desc    Auto-create a payment by fetching order & user details via inter-service calls
+ * @route   POST /api/payments/order/:orderId/user/:userId
+ * @integration  Order Service     — GET /orders/:orderId
+ * @integration  User Identity Svc — GET /api/users/:userId
+ */
+exports.createPaymentFromOrder = async (req, res, next) => {
+  try {
+    const { orderId, userId } = req.params;
+    const { currency, paymentMethod, metadata } = req.body;
+
+    const result = await paymentService.createPaymentFromOrder({
+      orderId,
+      userId,
+      currency,
+      paymentMethod,
+      metadata,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Payment created successfully from order",
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Get a payment enriched with live order & user details
+ * @route   GET /api/payments/:id/details
+ * @integration  Order Service     — GET /orders/:orderId
+ * @integration  User Identity Svc — GET /api/users/:userId
+ */
+exports.getPaymentWithDetails = async (req, res, next) => {
+  try {
+    const result = await paymentService.getPaymentWithDetails(req.params.id);
+
+    res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Process a new payment (manual — caller supplies amount)
  * @route   POST /api/payments
  */
 exports.createPayment = async (req, res, next) => {
