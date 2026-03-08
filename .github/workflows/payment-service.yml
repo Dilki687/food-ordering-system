@@ -123,8 +123,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          no-cache: true
 
   # ─────────────────────────────────────────────────
   # 4. DEPLOY to Railway
@@ -150,15 +149,24 @@ jobs:
           echo "Environment ID: $ENV_ID"
 
           # Step 2: Update Railway service to use the new SHA-tagged image (forces image pull)
-          IMAGE_TAG="${{ secrets.DOCKER_USERNAME }}/payment-service:sha-$GITHUB_SHA"
+          # Use short SHA to match what docker/metadata-action generates (sha-<7chars>)
+          SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
+          IMAGE_TAG="${{ secrets.DOCKER_USERNAME }}/payment-service:sha-${SHORT_SHA}"
           echo "Updating Railway service image to: $IMAGE_TAG"
-          UPDATE=$(curl -sf -X POST "https://backboard.railway.com/graphql/v2" \
+          UPDATE=$(curl -s -X POST "https://backboard.railway.com/graphql/v2" \
             -H "Authorization: Bearer $RAILWAY_TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"query\":\"mutation { serviceInstanceUpdate(serviceId: \\\"af970fd3-7ca2-46c5-95db-f221fa824281\\\", environmentId: \\\"$ENV_ID\\\", input: { source: { image: \\\"$IMAGE_TAG\\\" } }) }\"}")
+            -d "{\"query\":\"mutation { serviceInstanceUpdate(input: { serviceId: \\\"af970fd3-7ca2-46c5-95db-f221fa824281\\\", environmentId: \\\"$ENV_ID\\\", source: { image: \\\"$IMAGE_TAG\\\" } }) }\"}")
           echo "Update response: $UPDATE"
 
-          # Step 3: Trigger deployment with the new image
+          # Step 3: Ensure ORDER_SERVICE_URL env var is set in Railway
+          curl -s -X POST "https://backboard.railway.com/graphql/v2" \
+            -H "Authorization: Bearer $RAILWAY_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"query\":\"mutation { variableUpsert(input: { projectId: \\\"ba4412f7-ec82-4931-a3e8-608df1b959e6\\\", environmentId: \\\"$ENV_ID\\\", serviceId: \\\"af970fd3-7ca2-46c5-95db-f221fa824281\\\", name: \\\"ORDER_SERVICE_URL\\\", value: \\\"https://order-service-production-5615.up.railway.app\\\" }) }\"}" || true
+          echo "ORDER_SERVICE_URL variable upserted"
+
+          # Step 4: Trigger deployment with the new image
           DEPLOY=$(curl -sf -X POST "https://backboard.railway.com/graphql/v2" \
             -H "Authorization: Bearer $RAILWAY_TOKEN" \
             -H "Content-Type: application/json" \
