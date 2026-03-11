@@ -27,20 +27,10 @@ services:
       - MONGO_URI=mongodb://mongo-payment:27017/payment-service
       - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
       - USER_SERVICE_URL=https://user-identity-service.onrender.com
+      - ORDER_SERVICE_URL=https://order-service-production-5615.up.railway.app
       - NODE_ENV=production
     depends_on:
       - mongo-payment
-
-  payment-frontend:
-    build:
-      context: ./payment-service-frontend
-      args:
-        VITE_API_BASE_URL: http://localhost:8084
-        VITE_STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY}
-    ports:
-      - "3000:80"
-    depends_on:
-      - payment
 
   mongo-payment:
     image: mongo:7
